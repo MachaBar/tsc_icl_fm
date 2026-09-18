@@ -1,0 +1,46 @@
+[project]
+name = "AROMA_TS"
+version = "0.1.0"
+description = "Implementation of AROMA multi datasets training"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aeon>=1.5.0",
+    "chronos-forecasting>=2.0.0",
+    "datasets<4.0",
+    "einops>=0.8.0",
+    "einx>=0.3.0",
+    "fev>=0.7.0",
+    "gluonts>=0.16.2",
+    "hydra-core>=1.3.2",
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.9.2",
+    "numpy>=2.1.3",
+    "pandas>=2.2.3",
+    "prophet>=1.2.1",
+    "pytorch-optimizer>=3.9.0",
+    "scikit-learn>=1.8.0",
+    "statsmodels>=0.14.5",
+    "tabicl>=2.0.2",
+    "tabpfn>=2.1.3",
+    "tensorboard>=2.21.0",
+    "torch>=2.5.1",
+    "xgboost>=3.2.0",
+]
+
+[tool.pyright]
+include = ["src"]
+
+reportPossiblyUnboundVariable = false
+reportOptionalCall = false
+reportOptionalMemberAccess = false
+reportIndexIssue = false
+reportOperatorIssue = false
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true   # -- n'est utilisé QUE par les paquets qui le référencent explicitement
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu121" }

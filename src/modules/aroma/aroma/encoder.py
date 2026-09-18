@@ -76,7 +76,8 @@ class UnivariatePerceiverEncoder(nn.Module):
         encode_geo: bool = False,
         include_pos_in_value: bool = False,
         headwise_attn_output_gate: bool = False,
-        use_kl: bool = True
+        use_kl: bool = False,
+        use_cls_token: bool = False
     ):
         """
         AROMA encoder based on a Perceiver architecture.
@@ -112,6 +113,7 @@ class UnivariatePerceiverEncoder(nn.Module):
         self.include_pos_in_value = include_pos_in_value
         self.use_kl               = use_kl
         self.num_latents          = num_latents
+        self.use_cls_token        = use_cls_token
 
         # if include_pos_in_value, we must make sure that keys and values share the same dim
         # hence we call FourierPositionalEmbedding which NeRFEncoding + linear proj to hidden_dim
@@ -144,7 +146,10 @@ class UnivariatePerceiverEncoder(nn.Module):
         # initialize latent tokens:
         small_std = False
         sigma = 0.02 if small_std else 1
-        self.latents = nn.Parameter(torch.randn(num_latents, hidden_dim) * sigma)
+        self.latents = nn.Parameter(torch.randn(num_latents, hidden_dim) * sigma) # la query apprennable du perceiver
+        if self.use_cls_token:
+            self.cls_token = nn.Parameter(torch.randn(1, hidden_dim) * sigma)
+        self.total_latents = num_latents + int(self.use_cls_token)
 
         # get QK dim:
         value_dim = hidden_dim
@@ -245,6 +250,7 @@ class UnivariatePerceiverEncoder(nn.Module):
             self.logvar_fc = nn.Linear(hidden_dim, latent_dim)
         self.lift_z    = nn.Linear(latent_dim, hidden_dim)
         self.out_dim   = len(scales) * mlp_feature_dim
+        self.latent_out_dim = hidden_dim  # dim of a block ①② latent token (see `return_latents=True`)
 
     def forward(
         self,
@@ -256,6 +262,7 @@ class UnivariatePerceiverEncoder(nn.Module):
         target_coords: Optional[torch.Tensor] = None,
         sample_posterior: bool = True,
         return_stats: bool = False,
+        return_latents: bool = False,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         
         '''
@@ -272,6 +279,9 @@ class UnivariatePerceiverEncoder(nn.Module):
 
         # prepare queries of the geo encoder:
         x = repeat(self.latents, "n d -> b n d", b=b)   # (bs, num_latents, hidden_dim)
+        if self.use_cls_token:
+            cls_token = repeat(self.cls_token, "1 d -> b 1 d", b=b)
+            x = torch.cat([x, cls_token], dim=1)
 
         # prepare keys and values of the geo encoder:
         k = self.pos_encoding(coords)                 # (bs, seq_len, )
@@ -332,6 +342,14 @@ class UnivariatePerceiverEncoder(nn.Module):
             x = self.lift_z(z)          # (bs, num_latents, hidden_dim)
 
 
+        if return_latents: # FOR CLASSIFICATION #
+            # block 1,2 output Z_val, before the decoder cross-attn to target_coords (block 3):
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            if return_stats:
+                return x, kl_loss, mu, logvar
+            return x, kl_loss
+
         # 4/4 Cross-attn with target coords to get decoder features
         
         # get queries of the cross-attn decoder:
@@ -381,7 +399,8 @@ class PerceiverEncoder(nn.Module):
         encode_geo: bool = False,
         include_pos_in_value: bool = False,
         headwise_attn_output_gate: bool = False,
-        use_kl: bool = True
+        use_kl: bool = False,
+        use_cls_token: bool = False
     ):
         """
         AROMA encoder based on a Perceiver architecture.
@@ -417,6 +436,7 @@ class PerceiverEncoder(nn.Module):
         self.include_pos_in_value = include_pos_in_value
         self.use_kl               = use_kl
         self.num_latents          = num_latents
+        self.use_cls_token        = use_cls_token
 
         # if include_pos_in_value, we must make sure that keys and values share the same dim
         # hence we call FourierPositionalEmbedding which NeRFEncoding + linear proj to hidden_dim
@@ -450,6 +470,9 @@ class PerceiverEncoder(nn.Module):
         small_std = False
         sigma = 0.02 if small_std else 1
         self.latents = nn.Parameter(torch.randn(num_latents, hidden_dim) * sigma)
+        if self.use_cls_token:
+            self.cls_token = nn.Parameter(torch.randn(1, hidden_dim) * sigma)
+        self.total_latents = num_latents + int(self.use_cls_token)
 
         # get QK dim:
         value_dim = hidden_dim
@@ -570,6 +593,7 @@ class PerceiverEncoder(nn.Module):
             self.logvar_fc = nn.Linear(hidden_dim, latent_dim)
         self.lift_z    = nn.Linear(latent_dim, hidden_dim)
         self.out_dim   = len(scales) * mlp_feature_dim
+        self.latent_out_dim = hidden_dim  # dim of a block ①② latent token (see `return_latents=True`)
 
     def _pad(
         self,
@@ -650,6 +674,7 @@ class PerceiverEncoder(nn.Module):
         target_coords: Optional[torch.Tensor] = None,
         sample_posterior: bool = True,
         return_stats: bool = False,
+        return_latents: bool = True,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         
         '''
@@ -694,9 +719,12 @@ class PerceiverEncoder(nn.Module):
 
         # prepare queries of the geo encoder:
         x = repeat(self.latents, "n d -> b n d", b=b*c)   # (bs x C, num_latents, hidden_dim)
+        if self.use_cls_token:
+            cls_token = repeat(self.cls_token, "1 d -> b 1 d", b=b*c)
+            x = torch.cat([x, cls_token], dim=1)
 
         # prepare keys and values of the geo encoder:
-        k = self.pos_encoding(coords_all)                 # (bs x C, seq_len, )
+        k = self.pos_encoding(coords_all)                 # (bs x C, seq_len, ) seq_len = M ; hidden_dim = d
         v = self.lift_values(series_all)                  # (bs x C, seq_len, hidden_dim)
 
         # if encode_geo, cross attend to the other pixel locations
@@ -754,6 +782,14 @@ class PerceiverEncoder(nn.Module):
             x = self.lift_z(z)          # (bs x C, num_latents, hidden_dim)
 
 
+        if return_latents:
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            x_latents = rearrange(x, '(b c) m d -> b c m d', b=b, c=c)
+            if return_stats:
+                return x_latents, kl_loss, mu, logvar
+            return x_latents, kl_loss
+
         # 4/5 cross-attend the channels
         
         x = rearrange(x, '(b c) m d -> (b m) c d', b=b, c=c)            # (bs x num_latents, C, hidden_dim)
@@ -773,7 +809,8 @@ class PerceiverEncoder(nn.Module):
 
         # rearrange and self attention block:
         # x = rearrange(x, '(b m) 1 d -> b m d', b=b, m=self.num_latents) # (bs, num_latents, hidden_dim)
-        x = rearrange(x_auto_reg, '(b m) 1 d -> b m d', b=b, m=self.num_latents) # (bs, num_latents, hidden_dim)
+        # x = rearrange(x_auto_reg, '(b m) 1 d -> b m d', b=b, m=self.num_latents) # (bs, num_latents, hidden_dim)
+        x = rearrange(x_auto_reg, '(b m) 1 d -> b m d', b=b, m=self.total_latents)
 
         for index, (self_attn, self_ff) in enumerate(self.layers_after_mixing):
 
