@@ -162,7 +162,7 @@ def make_batch(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Assemble une liste d'épisodes en un batch (bs, N, T, 1) prêt pour
     AROMAEncoderICLClassifier.forward(series, coords, y_train). Retourne
-    aussi y_query (labels des séries requête, pour la loss -- jamais passé
+    aussi y_query (labels des séries requête, pour la loss - jamais passé
     au modèle)."""
     values_list, labels_list, train_sizes = [], [], []
     for episode in episodes:

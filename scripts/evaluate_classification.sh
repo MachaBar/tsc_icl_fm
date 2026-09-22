@@ -18,6 +18,10 @@ set -euo pipefail
 #     --corpus-dir /home/d32485/synthetic-ts-classif/out/tasks/mlp_ou_n12_c4_seed0_len512/ \
 #     --split eval --n-repeats 10
 
-uv run python -u -m scripts.visualize_corpus \
-        --corpus-dir /home/d32485/tsc_icl_fm/runs/20260915_093413_perceiver_5roots_job48572/ckpt/best.pt \
-        --split eval --indices 10,20
+# uv run python -u -m scripts.visualize_corpus \
+#         --corpus-dir /home/d32485/tsc_icl_fm/runs/20260915_093413_perceiver_5roots_job48572/ckpt/best.pt \
+#         --split eval --indices 10,20
+
+# uv run python -u -m scripts.aggregate_ood_results --runs-dir runs/ --out /home/d32485/tsc_icl_fm/runs/ood_curves.png
+
+uv run python -u -m scripts.aggregate_ood_mechanism_results --runs-dir runs/ --out /home/d32485/tsc_icl_fm/runs/ood_mechanism_curves.png

@@ -127,7 +127,6 @@ def forward_batch(
     series, coords   = series.to(device), coords.to(device)
     y_train, y_query = y_train.to(device), y_query.to(device)
 
-    # kl_loss ignoré : encodeur en --use-kl False (déterministe) par défaut, donc toujours 0.
     logits, _ = model(series=series, coords=coords, y_train=y_train)
     ce_loss = nn.functional.cross_entropy(logits.reshape(-1, logits.shape[-1]), y_query.reshape(-1))
     acc = (logits.argmax(dim=-1) == y_query).float().mean()

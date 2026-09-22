@@ -26,6 +26,7 @@ d'un coup plutôt qu'une par une.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,6 +159,26 @@ def main() -> None:
     cm_path = out_dir / "confusion_{}.png".format(args.split)
     plot_confusion(cm, cm_path)
     print("[Eval] matrice de confusion -> {}".format(cm_path))
+
+    # résumé machine-readable -- utile pour agréger de nombreux runs (ex. grille OOD)
+    # sans avoir à reparser les logs SLURM texte par texte.
+    summary = {
+        "ckpt": str(args.ckpt),
+        "corpus_dirs": [str(d) for d in args.corpus_dir],
+        "split": args.split,
+        "n_repeats": args.n_repeats,
+        "n_episodes": len(episodes),
+        "n_classes": n_classes,
+        "chance": 1 / n_classes,
+        "acc_mean": accs_t.mean().item(),
+        "acc_std": accs_t.std().item(),
+        "baseline_knn_acc": baseline_acc,
+        "train_step": ckpt.get("step"),
+        "train_val_acc": ckpt.get("val_acc"),
+    }
+    summary_path = out_dir / "summary_{}.json".format(args.split)
+    summary_path.write_text(json.dumps(summary, indent=2))
+    print("[Eval] résumé -> {}".format(summary_path))
 
 
 if __name__ == "__main__":
