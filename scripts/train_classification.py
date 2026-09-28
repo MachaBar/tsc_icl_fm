@@ -150,6 +150,8 @@ def plot_history(history: dict, n_classes: int, out_path: Path) -> None:
 
     axes[1].plot(history["step"], history["train_acc"], label="train")
     axes[1].plot(history["step"], history["val_acc"], label="val")
+    if history.get("ood_val_acc"):
+        axes[1].plot(history["step"], history["ood_val_acc"], label="ood-monitor", linestyle=":")
     axes[1].axhline(1 / n_classes, color="gray", linestyle="--", linewidth=1, label="hasard")
     axes[1].set_xlabel("step")
     axes[1].set_ylabel("accuracy")
@@ -171,6 +173,7 @@ def main() -> None:
 
     # ap.add_argument("--corpus-dir", type=Path, required=True, help="dossier contenant les shard_*.parquet + metadata.json (voir generate_synthetic_corpus.py --format parquet)")
     ap.add_argument("--corpus-dir", type=Path, nargs="+", required=True, help="un ou plusieurs dossiers shard_*.parquet + metadata.json -- plusieurs = pool combiné (mêmes n_classes/length requis, voir docstring)")
+    ap.add_argument("--ood-corpus-dir", type=Path, nargs="+", default=None, help="dossiers OOD (ex: seeds jamais entraînés) évalués en lecture seule à chaque --eval-every, purement informatif -- n'affecte ni le training, ni le choix du meilleur checkpoint, ni l'early stopping")
     ap.add_argument("--out", type=Path, required=True, help="dossier de sortie (ckpt/, plots/)")
 
     # données
@@ -258,6 +261,19 @@ def main() -> None:
     )
     logger.info("[Data] hasard = {:.3f} (accuracy d'un classifieur aléatoire à {} classes)".format(1 / n_classes, n_classes))
 
+    ood_episodes = None
+    if args.ood_corpus_dir:
+        ood_data = load_corpus_shards_multi(args.ood_corpus_dir)
+        # pool train_episodes + eval_episodes du côté OOD -- ce ne sont QUE des
+        # seeds jamais vus à l'entraînement (voir --corpus-dir vs --ood-corpus-dir
+        # dans generate_ou_seed_sweep.py), donc pas besoin de garder la
+        # distinction train/eval à l'intérieur du pool OOD lui-même
+        ood_episodes = ood_data["train_episodes"] + ood_data["eval_episodes"]
+        logger.info(
+            "[Data] OOD monitoring -- {} corpus, {} épisodes (lecture seule, "
+            "n'affecte ni le training ni l'early stopping)".format(ood_data["n_corpora"], len(ood_episodes))
+        )
+
     # 2/3 MODÈLE
 
     model = build_model(args, n_classes).to(device)
@@ -276,6 +292,9 @@ def main() -> None:
     # 3/3 BOUCLE D'ENTRAÎNEMENT (par steps)
 
     history = {"step": [], "train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+    if ood_episodes is not None:
+        history["ood_val_loss"] = []
+        history["ood_val_acc"] = []
     best_val_acc = -1.0
     evals_since_improvement = 0
     running_loss, running_acc, n_running = 0.0, 0.0, 0  # accumulés depuis le dernier eval
@@ -326,6 +345,24 @@ def main() -> None:
         val_loss /= max(1, n_val_batches)
         val_acc  /= max(1, n_val_batches)
 
+        # monitoring OOD (lecture seule) -- purement informatif, jamais utilisé
+        # pour le choix du meilleur checkpoint ni pour l'early stopping ci-dessous
+        ood_val_loss, ood_val_acc = None, None
+        if ood_episodes is not None:
+            ood_loss_sum, ood_acc_sum, n_ood_batches = 0.0, 0.0, 0
+            with torch.no_grad():
+                for batch_episodes in batches(ood_episodes, args.batch_size, shuffle=False):
+                    ce_loss, acc = forward_batch(model, batch_episodes, args.train_frac, length, device)
+                    ood_loss_sum += ce_loss.item()
+                    ood_acc_sum  += acc.item()
+                    n_ood_batches += 1
+            ood_val_loss = ood_loss_sum / max(1, n_ood_batches)
+            ood_val_acc  = ood_acc_sum / max(1, n_ood_batches)
+            history["ood_val_loss"].append(ood_val_loss)
+            history["ood_val_acc"].append(ood_val_acc)
+            writer.add_scalar("loss/ood_val", ood_val_loss, step)
+            writer.add_scalar("accuracy/ood_val", ood_val_acc, step)
+
         history["step"].append(step)
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)
@@ -336,11 +373,19 @@ def main() -> None:
         writer.add_scalar("accuracy/val", val_acc, step)
         writer.add_scalar("lr", optimizer.param_groups[0]["lr"], step)
 
-        logger.info(
-            "[Training] step {:05d} -- train loss {:.4f} acc {:.3f} | val loss {:.4f} acc {:.3f}".format(
-                step, train_loss, train_acc, val_loss, val_acc
+        if ood_val_acc is not None:
+            logger.info(
+                "[Training] step {:05d} -- train loss {:.4f} acc {:.3f} | val loss {:.4f} acc {:.3f} "
+                "| OOD-monitor loss {:.4f} acc {:.3f}".format(
+                    step, train_loss, train_acc, val_loss, val_acc, ood_val_loss, ood_val_acc
+                )
             )
-        )
+        else:
+            logger.info(
+                "[Training] step {:05d} -- train loss {:.4f} acc {:.3f} | val loss {:.4f} acc {:.3f}".format(
+                    step, train_loss, train_acc, val_loss, val_acc
+                )
+            )
         plot_history(history, n_classes, args.out / "plots" / "training_curves.png")
 
         if val_acc > best_val_acc:

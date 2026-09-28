@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Optional
 
 from torch import nn, Tensor
 import torch
@@ -75,7 +75,7 @@ class ICLearningClassification(nn.Module):
         self.num_classes = num_classes
         self.d_model     = d_model
 
-    def _icl_predictions(self, R: Tensor, y_train: Tensor) -> Tensor:
+    def _icl_predictions(self, R: Tensor, y_train: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
         """In-context learning predictions.
 
         Args:
@@ -88,20 +88,28 @@ class ICLearningClassification(nn.Module):
         y_train : Tensor of shape (B, train_size)
             Integer class labels for the first `train_size` series (context),
             where `train_size` is the position to split `R` into context/query.
+        key_padding_mask : Optional[Tensor of shape (B, N)], default=None
+            True at a position = série fictive (padding, ex. classe absente de
+            cet épisode dans un schéma num_classes fixé à MAX_CLASSES) --
+            exclue des clés/valeurs de l'attention dans `self.tf_icl` (voir
+            Encoder.forward, déjà supporté nativement). Les positions paddées
+            de `y_train` (label arbitraire, jamais utilisé puisqu'exclues de
+            l'attention) doivent rester dans [0, num_classes) côté appelant
+            pour ne pas faire planter `self.label_encoder`.
         """
 
         train_size = y_train.shape[1]
         if self.inject_labels:
             R = R.clone()
             R[:, :train_size] = R[:, :train_size] + self.label_encoder(y_train.long())
-        src = self.tf_icl(R, attn_mask=train_size)
+        src = self.tf_icl(R, attn_mask=train_size, key_padding_mask=key_padding_mask)
         if self.norm_first:
             src = self.ln(src)
         out = self.decoder(src)  # (B, N, num_classes)
 
         return out
 
-    def forward(self, R: Tensor, y_train: Tensor) -> Tensor:
+    def forward(self, R: Tensor, y_train: Tensor, key_padding_mask: Optional[Tensor] = None) -> Tensor:
         """In-context classification based on learned series representations.
 
         Args:
@@ -110,6 +118,15 @@ class ICLearningClassification(nn.Module):
             Series representations of shape (B, N, D).
         y_train : Tensor of shape (B, train_size)
             Integer class labels for the context series.
+        key_padding_mask : Optional[Tensor of shape (B, N)], default=None
+            True = série fictive (padding), voir `_icl_predictions`. Les
+            logits renvoyés pour ces positions ne doivent PAS être utilisés
+            dans la loss côté appelant (voir aussi le masquage des classes
+            absentes -- num_classes ici est fixé à MAX_CLASSES, donc les
+            logits couvrent des classes qui peuvent ne pas exister pour cet
+            épisode : à masquer séparément avant la cross-entropy, ce module
+            ne connaît pas le n_classes réel de chaque épisode).
+
 
         Returns:
         -------
@@ -118,7 +135,7 @@ class ICLearningClassification(nn.Module):
         """
 
         train_size = y_train.shape[1]
-        out = self._icl_predictions(R, y_train)
+        out = self._icl_predictions(R, y_train, key_padding_mask=key_padding_mask)
         out = out[:, train_size:]
 
         return out
